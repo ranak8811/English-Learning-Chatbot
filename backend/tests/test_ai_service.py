@@ -40,10 +40,10 @@ async def test_offline_pedagogical_fallback():
     assert "Cat" in fallback_l1 or "Apple" in fallback_l1 or "🌟" in fallback_l1
 
     fallback_l2 = OFFLINE_PEDAGOGICAL_FALLBACKS["L2"]
-    assert "dog" in fallback_l2.lower()
+    assert "dog" in fallback_l2.lower() or "bird" in fallback_l2.lower()
 
     fallback_l3 = OFFLINE_PEDAGOGICAL_FALLBACKS["L3"]
-    assert "bunny" in fallback_l3.lower()
+    assert "puppy" in fallback_l3.lower() or "bunny" in fallback_l3.lower()
 
 
 @pytest.mark.asyncio

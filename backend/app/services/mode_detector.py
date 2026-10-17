@@ -64,7 +64,16 @@ def detect_child_mode(
     if selected_mood == "silly" and (len(text.split()) <= 2 or "!" in text):
         return "engagement"
 
-    # 3. Check for Conversation Mode triggers (Casual buddy chat)
+    # 3. Check for Learning Mode target vocabulary practice
+    target_vocab = [
+        "cat", "dog", "sun", "apple", "ball", "cow", "red", "blue", "yellow",
+        "cup", "star", "fish", "tree", "bird", "hat", "car", "duck", "bear",
+        "big", "small", "one", "two", "three", "four", "five"
+    ]
+    if any(re.search(rf"\b{word}\b", text) for word in target_vocab):
+        return "learning"
+
+    # 4. Check for Conversation Mode triggers (Casual buddy chat)
     for kw in CONVERSATION_KEYWORDS:
         if kw in text:
             return "conversation"
@@ -73,5 +82,5 @@ def detect_child_mode(
     if text.endswith("?") or text.startswith(("why", "what", "where", "who", "when")):
         return "conversation"
 
-    # 4. Default to Learning Mode for lesson-related answers and practice
+    # 5. Default to Learning Mode
     return "learning"
