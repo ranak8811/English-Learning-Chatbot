@@ -8,10 +8,8 @@ class Settings(BaseSettings):
     Application Settings loaded from environment variables or .env file.
     Designed for clean configuration management and easy explainability.
     """
-    # Database Configuration (Neon Cloud PostgreSQL)
-    DATABASE_URL: str = (
-        "postgresql://neondb_owner:npg_vaXZ35wxMQGi@ep-gentle-cake-azij2y8q-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-    )
+    # Database Configuration (Loaded strictly from .env / environment)
+    DATABASE_URL: str = ""
 
     # OpenRouter LLM Configuration
     OPENROUTER_API_KEY: str = ""
@@ -28,7 +26,7 @@ class Settings(BaseSettings):
     MAX_LATENCY_SLA_MS: int = 2000
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "backend/.env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
