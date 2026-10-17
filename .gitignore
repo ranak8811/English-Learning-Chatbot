@@ -1,7 +1,9 @@
 # Environments & Secrets (CRITICAL: Never commit credentials)
 .env
-.env.*
+.env.local
 *.env
+!.env.example
+
 
 # Assessment & Meta Specifications (Repo strictly tracks frontend & backend)
 dev-docs/
