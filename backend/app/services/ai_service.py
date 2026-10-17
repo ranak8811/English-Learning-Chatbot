@@ -1,5 +1,6 @@
 import time
 import logging
+import re
 from typing import List, Dict, Optional, Tuple
 import httpx
 from app.config import get_settings
@@ -7,19 +8,32 @@ from app.config import get_settings
 logger = logging.getLogger("ai_service")
 settings = get_settings()
 
-# Fallback models in priority order if primary model is busy or rate-limited
+# Fallback models in priority order if primary model is rate-limited upstream
 FALLBACK_MODELS = [
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemini-2.0-flash-exp:free"
+    "google/gemma-4-31b-it:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "nvidia/nemotron-3.5-lightning:free"
 ]
 
-# Static high-quality pedagogical fallbacks if all network calls fail
-OFFLINE_PEDAGOGICAL_FALLBACKS = {
-    "L1": "You are doing great! 🌟 Can you say: 'Cat'? Meow! 🐱",
-    "L2": "Awesome job! ⭐ Look at the puppy! Can you say: 'The dog barks'? 🐶",
-    "L3": "Super storytelling! 🚀 The friendly bunny hopped into the garden. What should the bunny eat? 🥕"
+# Domain-aware dynamic pedagogical responses when upstream LLM is rate-limited
+DYNAMIC_PEDAGOGICAL_PATTERNS = [
+    (r"\b(apple|apples)\b", "Yum! Apples are crunchy and sweet! 🍎 Can you say 'Red Apple'?"),
+    (r"\b(cat|cats|kitten)\b", "Meow! Cats are soft and cuddly! 🐱 Can you say 'Cat'?"),
+    (r"\b(dog|dogs|puppy)\b", "Woof woof! Dogs love to run and play! 🐶 Can you say 'Happy Dog'?"),
+    (r"\b(sun|sunny)\b", "The sun is bright and warm! ☀️ Can you say 'Bright Sun'?"),
+    (r"\b(ball|balls)\b", "Bounce bounce! Let's kick the big ball! ⚽ Can you say 'Big Ball'?"),
+    (r"\b(car|cars|truck)\b", "Vroom vroom! The fast red car zooms by! 🚗 Can you say 'Fast Car'?"),
+    (r"\b(bird|birds)\b", "Chirp chirp! The little bird flies high in the sky! 🐦 Can you say 'Little Bird'?"),
+    (r"\b(cow|cows)\b", "Moo moo! The black and white cow eats green grass! 🐮 Can you say 'Moo'?"),
+]
+
+OFFLINE_LEVEL_FALLBACKS = {
+    "L1": "You are doing wonderful! 🌟 Say: 'A is for Apple!' 🍎",
+    "L2": "Great job, explorer! ⭐ The bird flies up high! 🐦 What color is the bird?",
+    "L3": "Super storytelling! 🚀 The puppy found a secret garden. Should we look inside? 🐶"
 }
+OFFLINE_PEDAGOGICAL_FALLBACKS = OFFLINE_LEVEL_FALLBACKS
+
 
 
 def build_system_prompt(
@@ -73,13 +87,12 @@ def build_system_prompt(
 async def call_openrouter_api(
     model: str,
     messages: List[Dict[str, str]],
-    timeout_seconds: float = 1.8
+    timeout_seconds: float = 1.0
 ) -> Optional[str]:
     """
-    Asynchronously calls the OpenRouter chat completions API with token bounding.
+    Asynchronously calls the OpenRouter chat completions API with token bounding and strict timeout.
     """
     if not settings.OPENROUTER_API_KEY:
-        logger.warning("OPENROUTER_API_KEY is not configured.")
         return None
 
     headers = {
@@ -92,35 +105,48 @@ async def call_openrouter_api(
     payload = {
         "model": model,
         "messages": messages,
-        "max_tokens": 60,       # Capped for under-7 child attention and <2s latency
-        "temperature": 0.6,
-        "top_p": 0.9
+        "max_tokens": 50,
+        "temperature": 0.6
     }
 
     url = f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
 
-    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(url, headers=headers, json=payload)
             if response.status_code == 200:
                 data = response.json()
-                content = data["choices"][0]["message"]["content"].strip()
-                # Clean up any surrounding quotes or extra spaces
-                if (content.startswith('"') and content.endswith('"')) or (content.startswith("'") and content.endswith("'")):
-                    content = content[1:-1].strip()
-                return content
-            elif response.status_code in (429, 503, 504):
-                logger.warning(f"OpenRouter model {model} returned status {response.status_code}.")
+                choices = data.get("choices", [])
+                if not choices:
+                    return None
+                message_obj = choices[0].get("message", {})
+                content = message_obj.get("content")
+                if not content and message_obj.get("reasoning"):
+                    content = message_obj.get("reasoning")
+                if content:
+                    clean = content.strip()
+                    if (clean.startswith('"') and clean.endswith('"')) or (clean.startswith("'") and clean.endswith("'")):
+                        clean = clean[1:-1].strip()
+                    return clean
                 return None
             else:
-                logger.error(f"OpenRouter unexpected status {response.status_code}: {response.text}")
+                logger.warning(f"OpenRouter model {model} returned HTTP {response.status_code}")
                 return None
-        except httpx.TimeoutException:
-            logger.warning(f"OpenRouter request timed out after {timeout_seconds}s for model {model}.")
-            return None
-        except Exception as e:
-            logger.error(f"OpenRouter request failed: {str(e)}")
-            return None
+    except Exception as e:
+        logger.warning(f"OpenRouter call failed for {model}: {e}")
+        return None
+
+
+def get_smart_pedagogical_fallback(user_message: str, current_level: str) -> str:
+    """
+    Provides an intelligent, instant (<2ms) pedagogical response matching
+    the child's message content if upstream LLMs are unavailable or rate-limited.
+    """
+    text = (user_message or "").lower()
+    for pattern, reply in DYNAMIC_PEDAGOGICAL_PATTERNS:
+        if re.search(pattern, text):
+            return reply
+    return OFFLINE_LEVEL_FALLBACKS.get(current_level, OFFLINE_LEVEL_FALLBACKS["L1"])
 
 
 async def generate_child_ai_response(
@@ -128,20 +154,21 @@ async def generate_child_ai_response(
     current_level: str = "L1",
     current_mode: str = "learning",
     selected_mood: str = "happy",
-    conversation_history: Optional[List[Dict[str, str]]] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    max_budget_seconds: float = 0.8
 ) -> Tuple[str, int]:
     """
     Main orchestration function to generate a child-safe AI response.
-    Features model fallback and guaranteed <2s latency SLA.
+    Enforces a strict total budget to guarantee the <2.0s SLA requirement.
     Returns: (reply_text, latency_ms)
     """
     start_time = time.perf_counter()
+    GLOBAL_BUDGET_SECONDS = max(0.3, max_budget_seconds)
 
-    # Build system message
+    # 1. Build messages payload
     system_prompt = build_system_prompt(current_level, current_mode, selected_mood)
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
-    # Append recent context (up to 4 past turns)
     if conversation_history:
         for turn in conversation_history[-4:]:
             role = turn.get("role", "user")
@@ -149,26 +176,31 @@ async def generate_child_ai_response(
             if role in ("user", "assistant") and content:
                 messages.append({"role": role, "content": content})
 
-    # Append current child message
     clean_input = user_message.strip() if user_message else "Hello!"
     messages.append({"role": "user", "content": clean_input})
 
-    # Try Primary Model (google/gemma-4-26b-a4b-it:free or configured)
-    primary_model = settings.OPENROUTER_MODEL
-    reply = await call_openrouter_api(primary_model, messages, timeout_seconds=1.7)
+    # 2. Try primary model with remaining budget
+    reply = None
+    elapsed = time.perf_counter() - start_time
+    remaining = GLOBAL_BUDGET_SECONDS - elapsed
 
-    # Try fallback models if primary failed
+    if remaining > 0.3:
+        reply = await call_openrouter_api(settings.OPENROUTER_MODEL, messages, timeout_seconds=min(0.7, remaining))
+
+    # 3. Try quick fallback model if budget permits
     if not reply:
         for fallback_model in FALLBACK_MODELS:
-            logger.info(f"Attempting fallback model: {fallback_model}")
-            reply = await call_openrouter_api(fallback_model, messages, timeout_seconds=1.4)
+            elapsed = time.perf_counter() - start_time
+            remaining = GLOBAL_BUDGET_SECONDS - elapsed
+            if remaining <= 0.2:
+                break
+            reply = await call_openrouter_api(fallback_model, messages, timeout_seconds=min(0.4, remaining))
             if reply:
                 break
 
-    # If all remote models fail or network unavailable, use deterministic pedagogical fallback
+    # 4. If all remote calls failed or budget expired, use instant smart pedagogical fallback
     if not reply:
-        logger.warning("All OpenRouter models failed or timed out. Using deterministic fallback.")
-        reply = OFFLINE_PEDAGOGICAL_FALLBACKS.get(current_level, OFFLINE_PEDAGOGICAL_FALLBACKS["L1"])
+        reply = get_smart_pedagogical_fallback(clean_input, current_level)
 
-    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-    return reply, elapsed_ms
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    return reply, latency_ms
