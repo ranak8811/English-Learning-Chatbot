@@ -1,0 +1,43 @@
+# Environments & Secrets (CRITICAL: Never commit credentials)
+.env
+.env.*
+*.env
+
+# Assessment & Meta Specifications (Repo strictly tracks frontend & backend)
+dev-docs/
+reports/
+assesment.txt
+jd.txt
+PLAN.md
+DEV_DOCS_GENERATOR_FRAMEWORK.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Node & Frontend
+node_modules/
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+dist-ssr/
+*.local
+
+# macOS & Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
