@@ -10,9 +10,9 @@ settings = get_settings()
 
 # Fallback models in priority order if primary model is rate-limited upstream
 FALLBACK_MODELS = [
+    "cohere/north-mini-code:free",
+    "openrouter/free",
     "google/gemma-4-31b-it:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "nvidia/nemotron-3.5-lightning:free"
 ]
 
 # Domain-aware dynamic pedagogical responses when upstream LLM is rate-limited
@@ -87,10 +87,11 @@ def build_system_prompt(
 async def call_openrouter_api(
     model: str,
     messages: List[Dict[str, str]],
-    timeout_seconds: float = 1.0
+    timeout_seconds: float = 1.4
 ) -> Optional[str]:
     """
     Asynchronously calls the OpenRouter chat completions API with token bounding and strict timeout.
+    Utilizes OpenRouter's native model fallback array and disables reasoning overhead.
     """
     if not settings.OPENROUTER_API_KEY:
         return None
@@ -102,10 +103,18 @@ async def call_openrouter_api(
         "X-Title": "English Learning Chatbot for Children"
     }
 
+    # Pass fallback array (max 3 items as per OpenRouter API constraints)
+    fallback_candidates = [model]
+    for m in FALLBACK_MODELS:
+        if m not in fallback_candidates:
+            fallback_candidates.append(m)
+    fallback_candidates = fallback_candidates[:3]
+
     payload = {
         "model": model,
+        "models": fallback_candidates,
         "messages": messages,
-        "max_tokens": 50,
+        "max_tokens": 60,
         "temperature": 0.6
     }
 
@@ -130,10 +139,84 @@ async def call_openrouter_api(
                     return clean
                 return None
             else:
-                logger.warning(f"OpenRouter model {model} returned HTTP {response.status_code}")
+                err_text = ""
+                try:
+                    err_text = response.json().get("error", {}).get("message", "")
+                except Exception:
+                    err_text = response.text[:120]
+                logger.warning(f"OpenRouter model {model} returned HTTP {response.status_code}: {err_text}")
                 return None
     except Exception as e:
-        logger.warning(f"OpenRouter call failed for {model}: {e}")
+        err_name = type(e).__name__
+        err_msg = str(e) if str(e) else "Request timed out"
+        logger.warning(f"OpenRouter call failed for {model}: {err_name} ({err_msg})")
+        return None
+
+
+async def call_gemini_api(
+    system_instruction: str,
+    user_message: str,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    timeout_seconds: float = 1.4
+) -> Optional[str]:
+    """
+    Asynchronously calls Google Gemini's native generateContent API using the official Gemini endpoint.
+    Handles child-appropriate system instruction, conversation history, and token bounds.
+    """
+    if not settings.GEMINI_API_KEY:
+        return None
+
+    model = settings.GEMINI_MODEL or "gemini-2.5-flash"
+    url = f"{settings.GEMINI_BASE_URL.rstrip('/')}/models/{model}:generateContent?key={settings.GEMINI_API_KEY}"
+
+    contents = []
+    if conversation_history:
+        for turn in conversation_history[-4:]:
+            role = "model" if turn.get("role") == "assistant" else "user"
+            content = turn.get("content", "")
+            if content:
+                contents.append({"role": role, "parts": [{"text": content}]})
+
+    contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+    payload = {
+        "contents": contents,
+        "systemInstruction": {
+            "parts": [{"text": system_instruction}]
+        },
+        "generationConfig": {
+            "maxOutputTokens": 60,
+            "temperature": 0.6
+        }
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.post(url, json=payload)
+            if response.status_code == 200:
+                data = response.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return None
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if not parts:
+                    return None
+                text = parts[0].get("text", "").strip()
+                if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+                    text = text[1:-1].strip()
+                return text if text else None
+            else:
+                err_text = ""
+                try:
+                    err_text = response.json().get("error", {}).get("message", "")
+                except Exception:
+                    err_text = response.text[:120]
+                logger.warning(f"Google Gemini model {model} returned HTTP {response.status_code}: {err_text}")
+                return None
+    except Exception as e:
+        err_name = type(e).__name__
+        err_msg = str(e) if str(e) else "Request timed out"
+        logger.warning(f"Google Gemini call failed for {model}: {err_name} ({err_msg})")
         return None
 
 
@@ -155,11 +238,12 @@ async def generate_child_ai_response(
     current_mode: str = "learning",
     selected_mood: str = "happy",
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    max_budget_seconds: float = 0.8
+    max_budget_seconds: float = 1.7
 ) -> Tuple[str, int]:
     """
     Main orchestration function to generate a child-safe AI response.
     Enforces a strict total budget to guarantee the <2.0s SLA requirement.
+    Attempts Google Gemini first, then OpenRouter fallback, and lastly instant pedagogical fallback.
     Returns: (reply_text, latency_ms)
     """
     start_time = time.perf_counter()
@@ -167,38 +251,39 @@ async def generate_child_ai_response(
 
     # 1. Build messages payload
     system_prompt = build_system_prompt(current_level, current_mode, selected_mood)
-    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
-
-    if conversation_history:
-        for turn in conversation_history[-4:]:
-            role = turn.get("role", "user")
-            content = turn.get("content", "")
-            if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content})
-
     clean_input = user_message.strip() if user_message else "Hello!"
-    messages.append({"role": "user", "content": clean_input})
 
-    # 2. Try primary model with remaining budget
     reply = None
-    elapsed = time.perf_counter() - start_time
-    remaining = GLOBAL_BUDGET_SECONDS - elapsed
 
-    if remaining > 0.3:
-        reply = await call_openrouter_api(settings.OPENROUTER_MODEL, messages, timeout_seconds=min(0.7, remaining))
+    # 2. Try native Google Gemini API first if configured
+    if settings.GEMINI_API_KEY:
+        elapsed = time.perf_counter() - start_time
+        remaining = GLOBAL_BUDGET_SECONDS - elapsed
+        if remaining > 0.4:
+            reply = await call_gemini_api(
+                system_instruction=system_prompt,
+                user_message=clean_input,
+                conversation_history=conversation_history,
+                timeout_seconds=min(1.2, remaining)
+            )
 
-    # 3. Try quick fallback model if budget permits
-    if not reply:
-        for fallback_model in FALLBACK_MODELS:
-            elapsed = time.perf_counter() - start_time
-            remaining = GLOBAL_BUDGET_SECONDS - elapsed
-            if remaining <= 0.2:
-                break
-            reply = await call_openrouter_api(fallback_model, messages, timeout_seconds=min(0.4, remaining))
-            if reply:
-                break
+    # 3. If Gemini didn't return a reply, try OpenRouter with multi-model fallback array
+    if not reply and settings.OPENROUTER_API_KEY:
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if conversation_history:
+            for turn in conversation_history[-4:]:
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": clean_input})
 
-    # 4. If all remote calls failed or budget expired, use instant smart pedagogical fallback
+        elapsed = time.perf_counter() - start_time
+        remaining = GLOBAL_BUDGET_SECONDS - elapsed
+        if remaining > 0.4:
+            reply = await call_openrouter_api(settings.OPENROUTER_MODEL, messages, timeout_seconds=min(1.0, remaining))
+
+    # 4. If all remote calls failed, timed out, or budget expired, use instant smart pedagogical fallback (<2ms)
     if not reply:
         reply = get_smart_pedagogical_fallback(clean_input, current_level)
 

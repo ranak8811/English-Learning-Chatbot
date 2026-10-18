@@ -1,11 +1,13 @@
 import React from 'react';
-import { Star, Sparkles, Award } from 'lucide-react';
+import { Star, Sparkles, Award, Volume2, VolumeX } from 'lucide-react';
 
 export default function Header({
   childName = 'Little Explorer',
   currentLevel = 'L1',
   stars = 0,
-  levelUpRecommended = False,
+  levelUpRecommended = false,
+  soundEnabled = true,
+  onToggleSound,
   onLevelUp,
 }) {
   const levelNames = {
@@ -32,12 +34,30 @@ export default function Header({
           </div>
         </div>
 
-        {/* Stars and Level Badge */}
+        {/* Stars, Audio Mute Toggle, and Level Badge */}
         <div className="flex items-center gap-2 md:gap-3">
           {/* Level Pill */}
           <div className="hidden sm:flex items-center px-3 py-1.5 bg-sky-100 border border-sky-300 rounded-xl text-sky-800 text-xs font-bold shadow-sm">
             {levelNames[currentLevel] || currentLevel}
           </div>
+
+          {/* Sound Mute/Unmute Toggle */}
+          <button
+            onClick={onToggleSound}
+            className={`p-2.5 rounded-2xl border-2 font-bold transition transform active:scale-95 flex items-center justify-center shadow-sm ${
+              soundEnabled
+                ? 'bg-emerald-100 border-emerald-300 text-emerald-800 hover:bg-emerald-200'
+                : 'bg-slate-100 border-slate-300 text-slate-500 hover:bg-slate-200'
+            }`}
+            title={soundEnabled ? 'Audio narration ON (click to mute)' : 'Audio narration MUTED (click to enable)'}
+            aria-label={soundEnabled ? 'Mute audio' : 'Unmute audio'}
+          >
+            {soundEnabled ? (
+              <Volume2 className="w-5 h-5 text-emerald-700" />
+            ) : (
+              <VolumeX className="w-5 h-5 text-slate-500" />
+            )}
+          </button>
 
           {/* Star Counter with Pop Animation */}
           <div className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-400 to-yellow-400 text-amber-950 font-black rounded-2xl shadow-md border-2 border-yellow-200">
