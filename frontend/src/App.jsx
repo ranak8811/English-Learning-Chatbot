@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Send, Sparkles, RefreshCw } from 'lucide-react';
+import { Send, Sparkles } from 'lucide-react';
 import Header from './components/Header';
 import LevelSelector from './components/LevelSelector';
 import MoodSelector from './components/MoodSelector';
 import ChatWindow from './components/ChatWindow';
+import VoiceInput from './components/VoiceInput';
 import { sendChatMessage, getOrCreateChildProfile, recordChildMood } from './services/api';
+import { speakText, stopSpeech } from './services/speech';
 
 const INITIAL_MESSAGES = [
   {
@@ -27,6 +29,7 @@ export default function App() {
   const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
 
   // Initialize or load child profile on component mount
   useEffect(() => {
@@ -44,9 +47,32 @@ export default function App() {
     initProfile();
   }, []);
 
+  const handleToggleSound = () => {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+      if (!next) {
+        stopSpeech();
+      }
+      return next;
+    });
+  };
+
+  const handleVoiceTranscript = (text, isFinal) => {
+    setInputText(text);
+  };
+
+  const handleSpeak = (text) => {
+    if (soundEnabled && text) {
+      speakText(text);
+    }
+  };
+
   const handleSendMessage = async (textToSend) => {
     const text = (textToSend || inputText).trim();
     if (!text || isLoading) return;
+
+    // Stop ongoing speech before sending new message
+    stopSpeech();
 
     // 1. Immediately render child's utterance
     const userTurn = {
@@ -78,7 +104,12 @@ export default function App() {
 
       setMessages((prev) => [...prev, assistantTurn]);
 
-      // 4. Update rewards and levels
+      // 4. Automatically narrate response aloud with child-friendly pitch
+      if (soundEnabled && data.reply) {
+        speakText(data.reply);
+      }
+
+      // 5. Update rewards and levels
       if (typeof data.total_stars === 'number') {
         setStars(data.total_stars);
       }
@@ -91,17 +122,21 @@ export default function App() {
     } catch (err) {
       console.error('Chat error:', err);
       // Fallback friendly message if network dropped
+      const fallbackReply = "You did a super try! 🌟 Let's keep exploring! Can you say: 'Dog'? 🐶";
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: "You did a super try! 🌟 Let's keep exploring! Can you say: 'Dog'? 🐶",
+          content: fallbackReply,
           detected_mode: 'learning',
           detected_emotion: 'happy',
           latency_ms: 50,
           stars_awarded: 0,
         },
       ]);
+      if (soundEnabled) {
+        speakText(fallbackReply);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -137,6 +172,8 @@ export default function App() {
         currentLevel={currentLevel}
         stars={stars}
         levelUpRecommended={levelUpRecommended}
+        soundEnabled={soundEnabled}
+        onToggleSound={handleToggleSound}
         onLevelUp={handleLevelUp}
       />
 
@@ -155,9 +192,10 @@ export default function App() {
           isLoading={isLoading}
           currentLevel={currentLevel}
           onSelectSuggestion={handleSendMessage}
+          onSpeak={handleSpeak}
         />
 
-        {/* 4. Bottom Input Bar */}
+        {/* 4. Bottom Input Bar with Voice Microphone and Quick Send */}
         <div className="p-3 md:p-4 bg-white/95 border-t-2 border-amber-200 shadow-lg">
           <form
             onSubmit={(e) => {
@@ -166,6 +204,12 @@ export default function App() {
             }}
             className="flex items-center gap-2 max-w-3xl mx-auto"
           >
+            {/* Multimodal Speech-to-Text Microphone Input */}
+            <VoiceInput
+              onTranscript={handleVoiceTranscript}
+              disabled={isLoading}
+            />
+
             <input
               type="text"
               value={inputText}

@@ -26,5 +26,5 @@ def test_health_check_endpoint(client):
     data = response.json()
     assert data["status"] == "healthy"
     assert "Neon Cloud PostgreSQL" in data["database"]
-    assert "gemma" in data["llm_engine"].lower()
+    assert data["llm_engine"] == get_settings().OPENROUTER_MODEL
     assert data["latency_budget_ms"] == 2000

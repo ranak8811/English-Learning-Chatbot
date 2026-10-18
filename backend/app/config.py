@@ -13,8 +13,13 @@ class Settings(BaseSettings):
 
     # OpenRouter LLM Configuration
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_MODEL: str = "google/gemma-4-26b-a4b-it:free"
+    OPENROUTER_MODEL: str = "nvidia/nemotron-3.5-super-vl:free"
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+
+    # Native Google Gemini LLM Configuration
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
 
     # Application Configuration
     APP_NAME: str = "AI-Powered English Learning Chatbot (Under 7)"
