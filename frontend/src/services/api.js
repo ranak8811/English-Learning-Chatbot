@@ -1,7 +1,12 @@
 import axios from 'axios';
 
-// Base API URL supports both local development and cloud production (Vercel/Render)
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Base API URL supports local development and cloud production (Render)
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.PROD
+    ? 'https://english-learning-chatbot-backend.onrender.com'
+    : 'http://localhost:8000');
 
 const client = axios.create({
   baseURL: API_BASE,
